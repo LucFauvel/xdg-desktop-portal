@@ -40,6 +40,7 @@ struct _XdpCredential
 
   XdpContext *context;
   XdpDbusExperimentalHandlerCredential *handler;
+  char *ui_backend; /* D-Bus name of the UI backend, from the portal config */
 };
 
 #define XDP_TYPE_CREDENTIAL (xdp_credential_get_type ())
@@ -69,6 +70,7 @@ xdp_credential_dispose (GObject *object)
   XdpCredential *credential = XDP_CREDENTIAL (object);
 
   g_clear_object (&credential->handler);
+  g_clear_pointer (&credential->ui_backend, g_free);
 
   G_OBJECT_CLASS (xdp_credential_parent_class)->dispose (object);
 }
@@ -87,13 +89,16 @@ xdp_credential_class_init (XdpCredentialClass *klass)
 }
 
 static XdpCredential *
-xdp_credential_new (XdpContext *context, XdpDbusExperimentalHandlerCredential *handler)
+xdp_credential_new (XdpContext                           *context,
+                    XdpDbusExperimentalHandlerCredential *handler,
+                    const char                           *ui_backend)
 {
   g_autoptr (XdpCredential) credential = NULL;
 
   credential = g_object_new (XDP_TYPE_CREDENTIAL, NULL);
   credential->context = context;
   credential->handler = g_object_ref (handler);
+  credential->ui_backend = g_strdup (ui_backend);
 
   g_dbus_proxy_set_default_timeout (G_DBUS_PROXY (credential->handler), G_MAXINT);
 
@@ -126,7 +131,9 @@ static XdpOptionKey create_credential_options[] = {
 };
 
 static GVariant *
-create_credential_validate_options (GVariant *arg_options, GError **error)
+create_credential_validate_options (GVariant    *arg_options,
+                                    const char  *ui_backend,
+                                    GError     **error)
 {
   g_auto (GVariantBuilder) options = G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_VARDICT);
   gboolean validated;
@@ -135,6 +142,9 @@ create_credential_validate_options (GVariant *arg_options, GError **error)
                                   G_N_ELEMENTS (create_credential_options), NULL, error);
   if (!validated)
     return NULL;
+
+  /* Set by us, never by the app: the filter above drops unknown keys. */
+  g_variant_builder_add (&options, "{sv}", "ui_backend", g_variant_new_string (ui_backend));
 
   return g_variant_ref_sink (g_variant_builder_end (&options));
 }
@@ -156,7 +166,7 @@ handle_create_credential (XdpDbusExperimentalCredential *object,
   const char *app_id = xdp_app_info_get_id (app_info);
   g_autoptr (DexFuture) future = NULL;
 
-  options = create_credential_validate_options (arg_options, &error);
+  options = create_credential_validate_options (arg_options, credential->ui_backend, &error);
   if (!options)
     {
       g_dbus_method_invocation_return_gerror (g_steal_pointer (&invocation), error);
@@ -208,7 +218,9 @@ static XdpOptionKey get_credential_options[] = {
 };
 
 static GVariant *
-get_credential_validate_options (GVariant *arg_options, GError **error)
+get_credential_validate_options (GVariant    *arg_options,
+                                 const char  *ui_backend,
+                                 GError     **error)
 {
   g_auto (GVariantBuilder) options = G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_VARDICT);
   gboolean validated;
@@ -217,6 +229,9 @@ get_credential_validate_options (GVariant *arg_options, GError **error)
                                   G_N_ELEMENTS (get_credential_options), NULL, error);
   if (!validated)
     return NULL;
+
+  /* Set by us, never by the app: the filter above drops unknown keys. */
+  g_variant_builder_add (&options, "{sv}", "ui_backend", g_variant_new_string (ui_backend));
 
   return g_variant_ref_sink (g_variant_builder_end (&options));
 }
@@ -237,7 +252,7 @@ handle_get_credential (XdpDbusExperimentalCredential *object,
   const char *app_id = xdp_app_info_get_id (app_info);
   g_autoptr (DexFuture) future = NULL;
 
-  options = get_credential_validate_options (arg_options, &error);
+  options = get_credential_validate_options (arg_options, credential->ui_backend, &error);
   if (!options)
     {
       g_dbus_method_invocation_return_gerror (g_steal_pointer (&invocation), error);
@@ -307,7 +322,7 @@ init_credential (gpointer user_data)
       return dex_future_new_false ();
     }
 
-  credential = xdp_credential_new (context, handler);
+  credential = xdp_credential_new (context, handler, impl_config->dbus_name);
 
   xdp_context_take_and_export_portal (context, G_DBUS_INTERFACE_SKELETON (g_steal_pointer (&credential)),
                                       XDP_CONTEXT_EXPORT_FLAGS_RUN_IN_FIBER);
